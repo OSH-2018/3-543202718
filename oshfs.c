@@ -13,7 +13,7 @@ struct filenode {
 };//文件节点以链表形式存在
 
 static const size_t size = 4 * 1024 * 1024 * (size_t)1024;
-static void *mem[64 * 1024];//内存
+static void *mem[64 * 1024];//内存块
 
 static struct filenode *root = NULL;//根文件节点
 
@@ -43,8 +43,8 @@ static void create_filenode(const char *filename, const struct stat *st)//创建
 
 static void *oshfs_init(struct fuse_conn_info *conn)//内存初始化，函数提供了两种方法将所有的内存初始化为0
 {
-    size_t blocknr = sizeof(mem) / sizeof(mem[0]);//文件块的数量
-    size_t blocksize = size / blocknr;//文件块的大小
+    size_t blocknr = sizeof(mem) / sizeof(mem[0]);//文件块的数量64k
+    size_t blocksize = size / blocknr;//文件块的大小64KB
     // Demo 1
     for(int i = 0; i < blocknr; i++) {
         mem[i] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -181,6 +181,10 @@ static int oshfs_unlink(const char *path)//删除文件
     return 0;
 }
 
+/*Assignment: 
+Rewrite the following function : malloc(),realloc(),free();
+Struct filenode should be stored in the specific block.
+*/
 static const struct fuse_operations op = {
     .init = oshfs_init,
     .getattr = oshfs_getattr,
