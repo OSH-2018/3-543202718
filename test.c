@@ -4,13 +4,14 @@
 #include <errno.h>
 //#include <fuse.h>
 #include <sys/mman.h>
-
+#include <sys/stat.h>
 struct filenode {
-	char *filename;//文件名
-	void *content;//指向内容的指针
-	struct stat *st;//文件属性（定义在sys/stat.h中）
-	struct filenode *next;//指向下一个节点的指针
-};//文件节点以链表形式存在
+	int n;//文件占用的块数
+	char filename[36];//文件名	
+	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
+	struct filenode *next;//指向下一个节点的指针，8字节
+	void *content[8168];//指向内容的指针
+};//文件节点以链表形式存在，总空间占用为65536字节，即16kb
 struct block {
 	int num;//对应的mem的下标
 	int padding;//填充字段
@@ -62,6 +63,7 @@ void blockfree(void* p)//块释放
 int main(){
 	void* p=balloc(10000);
 	int i;
+	printf("%d\n",sizeof(struct filenode));
 	for (i=0;i<1024;i++) 
 		if (mem[i]) printf("%d is used.\n",i);
 	blockfree(p);

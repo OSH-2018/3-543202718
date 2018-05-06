@@ -1,3 +1,4 @@
+#! /bin/bash
 if mount|grep mountpoint -n;then
 sudo umount -l mountpoint
 fi
