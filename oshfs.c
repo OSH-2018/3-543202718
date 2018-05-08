@@ -19,25 +19,28 @@ static const size_t blocksize = 16 * (size_t)1024;//blocksize = 16KB
 static const int blocknr =16 * 1024;//blocknr = 16k
 static void *mem[16*1024];//内存块
 static struct filenode *root = NULL;//根文件节点
+int blockused=0;//确信blockused之前的所有块都被使用
 
 int getfbnum()//获取当前空闲块的数量
 {
 	int i,n=0;
 	for (i=0;i<blocknr;i++)
 		if (mem[i]==NULL) n++;
+	printf("当前空闲块数：%d\n",n);
 	return n;
 }
 
 int balloc()//块分配
 {
 	int i;
-	for (i=0;i<blocknr;i++)	{
+	for (i=blockused;i<blocknr;i++)	{
 		if (mem[i]==NULL) {
 			mem[i] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);//映射一块空间
 			break;
 		}
 	}
 	if (i>=blocknr) i=-1;//所有的块都是满的，没有空闲的块
+	if (i+1>blockused) blockused=i+1;
 	return i;
 }
 
@@ -45,14 +48,17 @@ void bfree(int k)//块释放
 {
 	munmap(mem[k], blocksize);//解除映射
 	mem[k]=NULL;
+	if (k<blockused) blockused=k;
 }
 
 int ralloc(struct filenode *node,int n2)//块重新分配
 {
 	int n1=node->amount;
-	int i,k;
+	int i,k=0;
+	puts("正在重新分配块");
+	printf("目前块数量为%d，需求块数量为%d\n",n1,n2);
 	if (n1>=n2) {//如果要求的空间比已有的小，释放多余的空间
-		for (i=n2;i<n1;i++) bfree(i);
+		for (i=n2;i<n1;i++) bfree(node->content[i]);
 		node->amount=n2;
 	}
 	else {//如果要求的空间比已有的大,新建一块空间后进行内存复制
@@ -84,6 +90,7 @@ static struct filenode *get_filenode(const char *name)//按照文件名获取文
 static void create_filenode(const char *filename, const struct stat *st)//创建文件节点
 {	
 	int k=balloc();//分配块存放文件属性
+	puts("正在创建文件节点");
 	if (k<0) {
 		puts("No enough space.Creation failed.");
 		return;
@@ -101,39 +108,11 @@ static void *oshfs_init(struct fuse_conn_info *conn)//内存初始化，函数�
 {	
 	return NULL;
 }
-/*mmap函数说明
-void* mmap(void* start,size_t length,int prot,int flags,int fd,off_t offset);
-start：映射区的开始地址，设置为0时表示由系统决定映射区的起始地址。 
-length：映射区的长度。//长度单位是 以字节为单位，不足一内存页按一内存页处理 
-prot：期望的内存保护标志，不能与文件的打开模式冲突。是以下的某个值，可以通过or运算合理地组合在一起 
-	PROT_EXEC //页内容可以被执行 
-	PROT_READ //页内容可以被读取 
-	PROT_WRITE //页可以被写入 
-	PROT_NONE //页不可访问 
-flags：指定映射对象的类型，映射选项和映射页是否可以共享。它的值可以是一个或者多个以下位的组合体 
-	MAP_FIXED //使用指定的映射起始地址，如果由start和len参数指定的内存区重叠于现存的映射空间，重叠部分将会被丢弃。
-				如果指定的起始地址不可用，操作将会失败。并且起始地址必须落在页的边界上。 
-	MAP_SHARED //与其它所有映射这个对象的进程共享映射空间。对共享区的写入，相当于输出到文件。直到msync()或者munmap()被调用，文件实际上不会被更新。 
-	MAP_PRIVATE //建立一个写入时拷贝的私有映射。内存区域的写入不会影响到原文件。这个标志和以上标志是互斥的，只能使用其中一个。 
-	MAP_DENYWRITE //这个标志被忽略。 
-	MAP_EXECUTABLE //同上 
-	MAP_NORESERVE //不要为这个映射保留交换空间。当交换空间被保留，对映射区修改的可能会得到保证。当交换空间不被保留，
-					同时内存不足，对映射区的修改会引起段违例信号。 
-	MAP_LOCKED //锁定映射区的页面，从而防止页面被交换出内存。 
-	MAP_GROWSDOWN //用于堆栈，告诉内核VM系统，映射区可以向下扩展。 	
-	MAP_ANONYMOUS //匿名映射，映射区不与任何文件关联。 
-	MAP_ANON //MAP_ANONYMOUS的别称，不再被使用。 
-	MAP_FILE //兼容标志，被忽略。 
-	MAP_32BIT //将映射区放在进程地址空间的低2GB，MAP_FIXED指定时会被忽略。当前这个标志只在x86-64平台上得到支持。 
-	MAP_POPULATE //为文件映射通过预读的方式准备好页表。随后对映射区的访问不会被页违例阻塞。 
-	MAP_NONBLOCK //仅和MAP_POPULATE一起使用时才有意义。不执行预读，只为已存在于内存中的页面建立页表入口。 
-fd：有效的文件描述词。一般是由open()函数返回，其值也可以设置为-1，此时需要指定flags参数中的MAP_ANON,表明进行的是匿名映射。 
-off_toffset：被映射对象内容的起点。
-*/
 static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属性
 {
 	int ret = 0;
 	struct filenode *node = get_filenode(path);
+	puts("正在返回文件属性");
 	if(strcmp(path, "/") == 0) {
 		memset(stbuf, 0, sizeof(struct stat));
 		stbuf->st_mode = S_IFDIR | 0755;
@@ -148,6 +127,7 @@ static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属�
 static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)//读目录
 {
 	struct filenode *node = root;
+	puts("正在读取目录");
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
 	while(node) {
@@ -160,6 +140,7 @@ static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, of
 static int oshfs_mknod(const char *path, mode_t mode, dev_t dev)//创建文件
 {
 	struct stat st;
+	puts("正在创建文件");
 	st.st_mode = S_IFREG | 0644;
 	st.st_uid = fuse_get_context()->uid;
 	st.st_gid = fuse_get_context()->gid;
@@ -178,9 +159,11 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 {
 	struct filenode *node = get_filenode(path);
 	int i,j,k,m,n,temp,sum;
+	puts("正在修改文件内容");
 	node->st.st_size = offset + size;//修改文件大小
 	n=(offset+size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	k=ralloc(node,n);//重定向文件内容指针
+	puts("文件指针已经重定向");
 	if (k<0) {
 		puts("No enough space.Modification failed.");
 		return -1;
@@ -203,6 +186,7 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 static int oshfs_truncate(const char *path, off_t size)//缩短文件大小（删除末尾的部分内容）
 {
 	struct filenode *node = get_filenode(path);
+	puts("正在缩短文件大小");
 	node->st.st_size = size;
 	int n=(size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	ralloc(node,n);//重定向文件内容指针
@@ -214,6 +198,7 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
 	struct filenode *node = get_filenode(path);
 	int ret = size;
 	int i,j,k,m,n,temp,sum;
+	puts("正在读取文件内容");
 	if(offset + size > node->st.st_size)
 		ret = node->st.st_size - offset;
 	m=offset/blocksize;//偏移位置所在的块
@@ -236,6 +221,7 @@ static int oshfs_unlink(const char *path)//删除文件
 	struct filenode *node=get_filenode(path);//找到文件
 	struct filenode *t=root;
 	int i;
+	puts("正在删除文件");
 	if (node==NULL) return -1;//异常处理，未找到文件
 	if (root==node) root=node->next;//如果是根节点，将root指针指向下一个节点
 	else {
