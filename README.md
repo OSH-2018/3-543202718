@@ -3,10 +3,11 @@
 我实现的文件系统主要是在示例程序的基础上修改而成，补全了删除功能，并对修改和读取功能做了一定改变，对于其他函数也在细节上有一定改动。源文件是oshfs.c。
 * 文件系统大小为256MB
 * 文件名不多于31字节
-* 支持文件最大内容为255.25MB
-* 最多支持16384个文件
+* 支持文件最大内容为254.5MB
+* 最多支持8192个文件
+* 支持创建、删除、修改文件的操作
 
-测试时，可以使用下列指令(最好在特权模式下)：
+测试时，可以使用下列指令：
 > ./make.sh -g\
 > ./test.sh
 
@@ -16,22 +17,22 @@
 文件节点和示例程序基本相同，也是使用链表实现。但为了支持以块为单位的存储，对content属性的类型做了改变，并新增了几个属性。对于文件名，增加了长度的限制。
 ```C
 struct filenode {
-    int amount;//文件占用的块数,4字节
-    int num;//文件节点对应的内存块编号,4字节
-    char filename[32];//文件名，要求不多于31字节（一个\0）
-    struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
-    struct filenode *next;//指向下一个节点的指针，8字节
-    int content[16336];//指向内容的虚拟指针,支持最大的内容为255.25MB
-};
+	int amount;//文件占用的块数,4字节
+	int num;//文件节点对应的内存块编号,4字节
+	char filename[32];//文件名，要求不多于32字节（包含\0）
+	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
+	struct filenode *next;//指向下一个节点的指针，8字节
+	int content[8144];//指向内容的指针,支持最大的内容为254.5MB
+};//文件节点以链表形式存在，总空间占用为32KB
 ```
-修改后的文件节点大小刚好为16KB，和块大小相等，也就是说每一个文件的属性和指向内容的指针都存储在一个块里。
+修改后的文件节点大小刚好为32KB，和块大小相等，也就是说每一个文件的属性和指向内容的指针都存储在一个块里。
 ## 内存管理
-我设置的总内存是256MB，内存被分成16k个块，每个块的大小是16KB。文件节点中存储着指向内容的所有块的虚拟指针，通过文件节点可以随机访问文件的任意内容。
+我设置的总内存是256MB，内存被分成8k个块，每个块的大小是32KB。文件节点中存储着指向内容的所有块的虚拟指针，通过文件节点可以随机访问文件的任意内容。
 ```C
 static const size_t size =256 * 1024 * (size_t)1024;//size = 256MB
-static const size_t blocksize = 16 * (size_t)1024;//blocksize = 16KB
-static const int blocknr =16 * 1024;//blocknr = 16k
-static void *mem[16*1024];//内存块
+static const size_t blocksize = 32 * (size_t)1024;//blocksize = 32KB
+static const int blocknr =8 * 1024;//blocknr = 8k
+static void *mem[8*1024];//内存块
 ```
 对于内存的分配而言，块是基本的单位。对块的分配采用了一个极其朴素的算法，遍历所有的块，找到第一个空闲的块，做内存映射，并返回块的地址（实际是mem的下标）。如果要分配多个块，就要多次执行这个函数。在这里，我使用了一个优化，用全局变量blockused记录了一个整数值，确保在这个数之前的所有块都已经被分配。事实上，由于空闲块大多是连续的，多次执行该函数分配的块很可能是连续的，使用该优化可以大大减少分配时间。
 ```C
@@ -95,24 +96,14 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 * 块的重新分配（需要增加块） O(m+n) 
 * 块的重新分配（需要减少块） O(n) 
 * 块的读写 O(n*blocksize)
-## 问题
-我的文件系统可以执行test.sh中的指令，得到的结果都符合预期。但如果写入超过64MB的文件，就会报错(这个时候的仍然有超过10000个空闲块)。
-> unlock_path : node -> treelock != 0 failed
-```sh
-#! /bin/bash
-cd mountpoint
-ls -al
-echo helloworld > testfile
-ls -l testfile # 查看是否成功创建文件
-cat testfile # 测试写入和读取是否相同
-dd if=/dev/zero of=testfile bs=1M count=50
-ls -l testfile # 测试50MiB大文件写入
-dd if=/dev/urandom of=testfile bs=1M count=1 seek=10
-ls -l testfile # 此时应为11MiB
-dd if=testfile of=/dev/null # 测试文件读取
-rm testfile
-ls -al # testfile是否成功删除
-```
+## 拓展说明
+由于我的电脑配置较低，因此文件系统只有256MB，便于调试和使用。实际上，可以很方便的对该文件系统进行拓展。一般而言，只需要修改几个常数就可以拓展系统。
+
+1. 修改文件系统大小size，一般是2的幂；
+2. 修改blocksize和blocknr，保证前者是后者的4倍（在使用虚拟指针的情况下，一个块对应的content数组长度等于blocknr，即一个文件大小可以等于size，但由于还有filename等其它项，实际会略小于size），且两者的积是size，即：
+	> blocksize = sqrt( size * 4 )\
+	> blocknr = sqrt( size / 4 )
+3. 修改filenode定义中的content数组长度，确保结构体大小等于blocksize。
 ## 附录
 mmap函数说明:
 

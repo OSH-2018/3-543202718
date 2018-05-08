@@ -11,13 +11,13 @@ struct filenode {
 	char filename[32];//文件名，要求不多于32字节
 	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
 	struct filenode *next;//指向下一个节点的指针，8字节
-	int content[16336];//指向内容的指针,支持最大的内容为255.25MB
-};//文件节点以链表形式存在，总空间占用为65536字节，即16KB
+	int content[8144];//指向内容的指针,支持最大的内容为254.5MB
+};//文件节点以链表形式存在，总空间占用为32KB
 
 static const size_t size =256 * 1024 * (size_t)1024;//size = 256MB
-static const size_t blocksize = 16 * (size_t)1024;//blocksize = 16KB
-static const int blocknr =16 * 1024;//blocknr = 16k
-static void *mem[16*1024];//内存块
+static const size_t blocksize = 32 * (size_t)1024;//blocksize = 32KB
+static const int blocknr =8 * 1024;//blocknr = 8k
+static void *mem[8*1024];//内存块
 static struct filenode *root = NULL;//根文件节点
 int blockused=0;//确信blockused之前的所有块都被使用
 
