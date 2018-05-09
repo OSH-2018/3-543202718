@@ -8,7 +8,7 @@
 struct filenode {
 	int amount;//文件占用的块数,4字节
 	int num;//文件节点对应的内存块编号,4字节
-	char filename[32];//文件名，要求不多于32字节
+	char filename[32];//文件名，要求不多于32字节（包括\0）
 	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
 	struct filenode *next;//指向下一个节点的指针，8字节
 	int content[8144];//指向内容的指针,支持最大的内容为254.5MB
@@ -26,7 +26,6 @@ int getfbnum()//获取当前空闲块的数量
 	int i,n=0;
 	for (i=0;i<blocknr;i++)
 		if (mem[i]==NULL) n++;
-	printf("当前空闲块数：%d\n",n);
 	return n;
 }
 
@@ -40,7 +39,7 @@ int balloc()//块分配
 		}
 	}
 	if (i>=blocknr) i=-1;//所有的块都是满的，没有空闲的块
-	if (i+1>blockused) blockused=i+1;
+	if (i+1>blockused) blockused=i+1;//当前分配了第i块，说明从0到i的块都不是空闲的
 	return i;
 }
 
@@ -48,20 +47,17 @@ void bfree(int k)//块释放
 {
 	munmap(mem[k], blocksize);//解除映射
 	mem[k]=NULL;
-	if (k<blockused) blockused=k;
+	if (k<blockused) blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
 }
 
 int ralloc(struct filenode *node,int n2)//块重新分配
 {
 	int n1=node->amount;
 	int i,k=0;
-	puts("正在重新分配块");
-	printf("目前块数量为%d，需求块数量为%d\n",n1,n2);
 	if (n1>=n2) {//如果要求的空间比已有的小，释放多余的空间
 		for (i=n2;i<n1;i++) bfree(node->content[i]);
-		node->amount=n2;
 	}
-	else {//如果要求的空间比已有的大,新建一块空间后进行内存复制
+	else {//如果要求的空间比已有的大,分配新增的块
 		k=getfbnum();//获取空闲块的数量
 		if (k<n2-n1) {
 			return -1;
@@ -69,7 +65,7 @@ int ralloc(struct filenode *node,int n2)//块重新分配
 		for (i=n1;i<n2;i++) {
 			k=balloc();
 			node->content[i]=k;
-		}
+		}//分配新增的块
 	}	
 	node->amount=n2;
 	return 0;
@@ -83,23 +79,21 @@ static struct filenode *get_filenode(const char *name)//按照文件名获取文
 			node = node->next;
 		else
 			return node;
-	}
+	}//遍历链表找到所要求的文件节点
 	return NULL;
 }
 
 static void create_filenode(const char *filename, const struct stat *st)//创建文件节点
 {	
 	int k=balloc();//分配块存放文件属性
-	puts("正在创建文件节点");
 	if (k<0) {
-		puts("No enough space.Creation failed.");
 		return;
 	}//错误处理
 	struct filenode *new = (struct filenode *)mem[k];	
 	strcpy(new->filename, filename);//复制文件名
 	memcpy(&(new->st), st, sizeof(struct stat));//复制文件属性
-	new->amount=0;
-	new->num=k;
+	new->amount = 0;
+	new->num = k;
 	new->next = root;	
 	root = new;//采用头插法，新节点插在根节点之前
 }
@@ -112,7 +106,6 @@ static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属�
 {
 	int ret = 0;
 	struct filenode *node = get_filenode(path);
-	puts("正在返回文件属性");
 	if(strcmp(path, "/") == 0) {
 		memset(stbuf, 0, sizeof(struct stat));
 		stbuf->st_mode = S_IFDIR | 0755;
@@ -127,7 +120,6 @@ static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属�
 static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)//读目录
 {
 	struct filenode *node = root;
-	puts("正在读取目录");
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
 	while(node) {
@@ -140,7 +132,6 @@ static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, of
 static int oshfs_mknod(const char *path, mode_t mode, dev_t dev)//创建文件
 {
 	struct stat st;
-	puts("正在创建文件");
 	st.st_mode = S_IFREG | 0644;
 	st.st_uid = fuse_get_context()->uid;
 	st.st_gid = fuse_get_context()->gid;
@@ -159,13 +150,10 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 {
 	struct filenode *node = get_filenode(path);
 	int i,j,k,m,n,temp,sum;
-	puts("正在修改文件内容");
 	node->st.st_size = offset + size;//修改文件大小
 	n=(offset+size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	k=ralloc(node,n);//重定向文件内容指针
-	puts("文件指针已经重定向");
 	if (k<0) {
-		puts("No enough space.Modification failed.");
 		return -1;
 	}//错误处理 
 	m=offset/blocksize;//偏移位置所在的块
@@ -186,7 +174,6 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 static int oshfs_truncate(const char *path, off_t size)//缩短文件大小（删除末尾的部分内容）
 {
 	struct filenode *node = get_filenode(path);
-	puts("正在缩短文件大小");
 	node->st.st_size = size;
 	int n=(size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	ralloc(node,n);//重定向文件内容指针
@@ -198,7 +185,6 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
 	struct filenode *node = get_filenode(path);
 	int ret = size;
 	int i,j,k,m,n,temp,sum;
-	puts("正在读取文件内容");
 	if(offset + size > node->st.st_size)
 		ret = node->st.st_size - offset;
 	m=offset/blocksize;//偏移位置所在的块
@@ -221,7 +207,6 @@ static int oshfs_unlink(const char *path)//删除文件
 	struct filenode *node=get_filenode(path);//找到文件
 	struct filenode *t=root;
 	int i;
-	puts("正在删除文件");
 	if (node==NULL) return -1;//异常处理，未找到文件
 	if (root==node) root=node->next;//如果是根节点，将root指针指向下一个节点
 	else {

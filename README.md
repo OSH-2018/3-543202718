@@ -1,18 +1,19 @@
 # OSHFS
+PB16110428 王浩宇
 ## 综述
-我实现的文件系统主要是在示例程序的基础上修改而成，补全了删除功能，并对修改和读取功能做了一定改变，对于其他函数也在细节上有一定改动。源文件是oshfs.c。
+我实现的文件系统主要是在示例程序的基础上修改而成，补全了删除功能，并对修改和读取功能做了一定改动，对于其他函数也在细节上有一定改动。源文件是oshfs.c。
 * 文件系统大小为256MB
-* 文件名不多于31字节
+* 文件名不多于32字节
 * 支持文件最大内容为254.5MB
 * 最多支持8192个文件
 * 支持创建、删除、修改文件的操作
 
 测试时，可以使用下列指令：
-> ./make.sh -g\
+> ./make.sh -g  
 > ./test.sh
 
-测试结束后，可以取消挂载:
-> sudo umount -l mountpoint
+测试结束后，可以取消挂载并删除挂载点:
+> ./make.sh -u
 ## 文件节点
 文件节点和示例程序基本相同，也是使用链表实现。但为了支持以块为单位的存储，对content属性的类型做了改变，并新增了几个属性。对于文件名，增加了长度的限制。
 ```C
@@ -70,7 +71,6 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 	n=(offset+size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	k=ralloc(node,n);//重定向文件内容指针
 	if (k<0) {
-		puts("No enough space.Modification failed.");
 		return -1;
 	}//错误处理 
 	m=offset/blocksize;//偏移位置所在的块
@@ -96,17 +96,18 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 * 块的重新分配（需要增加块） O(m+n) 
 * 块的重新分配（需要减少块） O(n) 
 * 块的读写 O(n*blocksize)
-## 拓展说明
-由于我的电脑配置较低，因此文件系统只有256MB，便于调试和使用。实际上，可以很方便的对该文件系统进行拓展。一般而言，只需要修改几个常数就可以拓展系统。
-
+## 扩展说明
+由于我的电脑配置较低，因此文件系统只有256MB，便于调试和使用。实际上，可以很方便的对该文件系统进行扩展。一般而言，只需要修改几个常数就可以扩展系统。
 1. 修改文件系统大小size，一般是2的幂；
-2. 修改blocksize和blocknr，保证前者是后者的4倍（在使用虚拟指针的情况下，一个块对应的content数组长度等于blocknr，即一个文件大小可以等于size，但由于还有filename等其它项，实际会略小于size），且两者的积是size，即：
-	> blocksize = sqrt( size * 4 )\
+2. 修改blocksize和blocknr，保证前者是后者的4倍（在使用虚拟指针的情况下，一个块对应的content数组长度等于blocknr，即一个文件大小可以等于size，但由于还有其它元数据，实际会略小于size），且两者的积是size，即：
+	> blocksize = sqrt( size * 4 )  
 	> blocknr = sqrt( size / 4 )
 3. 修改filenode定义中的content数组长度，确保结构体大小等于blocksize。
+## 脚本说明
++ 编译脚本make.sh有三个参数-f，-g和-u，一次只使用其中一个：-f将编译代码并使用前台模式运行（主要用于调试），-g将编译代码并使用后台模式运行，-u将取消挂载并删除挂载点（一般在测试结束后使用）；
++ 我编写的测试脚本test.sh有两项测试：一项是执行助教提供的测试指令，由于空间问题，其中2GB的测试文件被修改为250MB；另一项是在文件系统内外解压同一个文件并比较md5的值，两个md5值将会在最后输出，可以直接比较（由于某些功能未实现，元数据无法修改，解压会报错，但不影响解压出的文件内容和md5值）。
 ## 附录
-mmap函数说明:
-
+mmap函数说明:  
 void* mmap(void* start,size_t length,int prot,int flags,int fd,off_t offset);
 * start：映射区的开始地址，设置为0时表示由系统决定映射区的起始地址。 
 * length：映射区的长度。//长度单位是 以字节为单位，不足一内存页按一内存页处理 
