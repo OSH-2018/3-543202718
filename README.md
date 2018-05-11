@@ -15,18 +15,22 @@ PB16110428 王浩宇
 测试结束后，可以取消挂载并删除挂载点:
 > ./make.sh -u
 ## 文件节点
-文件节点和示例程序基本相同，也是使用链表实现。但为了支持以块为单位的存储，对content属性的类型做了改变，并新增了几个属性。对于文件名，增加了长度的限制。
+文件节点分为两种：一种是头节点，只有一个，永远不会被删除，包含指针和映射表（标记块是否被使用）；另一种是普通文件节点，普通文件节点和示例程序基本相同，也是使用链表实现。但为了支持以块为单位的存储，对content属性的类型做了改变，并新增了几个属性。对于文件名，增加了长度的限制。
 ```C
 struct filenode {
-	int amount;//文件占用的块数,4字节
-	int num;//文件节点对应的内存块编号,4字节
-	char filename[32];//文件名，要求不多于32字节（包含\0）
+	int32_t amount;//文件占用的块数,4字节
+	int32_t num;//文件节点对应的内存块编号,4字节
+	char filename[32];//文件名，要求不多于32字节（包括\0）
 	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
 	struct filenode *next;//指向下一个节点的指针，8字节
-	int content[8144];//指向内容的指针,支持最大的内容为254.5MB
+	int32_t content[8144];//指向内容的指针,支持最大的内容为254.5MB
 };//文件节点以链表形式存在，总空间占用为32KB
+struct headnode{
+	struct filenode *next;
+	char map[8*1024];//映射表，记录块是否被使用
+};//头节点
 ```
-修改后的文件节点大小刚好为32KB，和块大小相等，也就是说每一个文件的属性和指向内容的指针都存储在一个块里。
+修改后的普通文件节点大小刚好为32KB，和块大小相等，也就是说每一个文件的属性和指向内容的指针都存储在一个块里。头节点的大小小于32KB，但也用一个块存储。
 ## 内存管理
 我设置的总内存是256MB，内存被分成8k个块，每个块的大小是32KB。文件节点中存储着指向内容的所有块的虚拟指针，通过文件节点可以随机访问文件的任意内容。
 ```C
@@ -40,14 +44,16 @@ static void *mem[8*1024];//内存块
 int balloc()//块分配
 {
 	int i;
+	struct headnode *root=(struct headnode*)mem[0]; 
 	for (i=blockused;i<blocknr;i++)	{
-		if (mem[i]==NULL) {
+		if (root->map[i]==0) {
 			mem[i] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);//映射一块空间
+			root->map[i]=1;
 			break;
 		}
 	}
 	if (i>=blocknr) i=-1;//所有的块都是满的，没有空闲的块
-	if (i+1>blockused) blockused=i+1;//修改blockused
+	if (i+1>blockused) blockused=i+1;//当前分配了第i块，说明从0到i的块都不是空闲的
 	return i;
 }
 ```
@@ -55,9 +61,10 @@ int balloc()//块分配
 ```C
 void bfree(int k)//块释放
 {
+	struct headnode *root=(struct headnode*)mem[0];	
 	munmap(mem[k], blocksize);//解除映射
-	mem[k]=NULL;
-	if (k<blockused) blockused=k;//修改blockused
+	root->map[k]=0;
+	if (k<blockused) blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
 }
 ```
 ## 文件读写

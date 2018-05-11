@@ -4,37 +4,43 @@
 #include <errno.h>
 #include <fuse.h>
 #include <sys/mman.h>
-
+#include <inttypes.h>
 struct filenode {
-	int amount;//文件占用的块数,4字节
-	int num;//文件节点对应的内存块编号,4字节
+	int32_t amount;//文件占用的块数,4字节
+	int32_t num;//文件节点对应的内存块编号,4字节
 	char filename[32];//文件名，要求不多于32字节（包括\0）
 	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
 	struct filenode *next;//指向下一个节点的指针，8字节
-	int content[8144];//指向内容的指针,支持最大的内容为254.5MB
+	int32_t content[8144];//指向内容的指针,支持最大的内容为254.5MB
 };//文件节点以链表形式存在，总空间占用为32KB
-
+struct headnode{
+	struct filenode *next;
+	char map[8*1024];//映射表，记录块是否被使用
+};//头节点
 static const size_t size =256 * 1024 * (size_t)1024;//size = 256MB
 static const size_t blocksize = 32 * (size_t)1024;//blocksize = 32KB
 static const int blocknr =8 * 1024;//blocknr = 8k
 static void *mem[8*1024];//内存块
-static struct filenode *root = NULL;//根文件节点
 int blockused=0;//确信blockused之前的所有块都被使用
 
-int getfbnum()//获取当前空闲块的数量
+int enoughblock(int m)//判断当前是否有足够的空闲块
 {
-	int i,n=0;
-	for (i=0;i<blocknr;i++)
-		if (mem[i]==NULL) n++;
-	return n;
+	int i;
+	struct headnode *root=(struct headnode*)mem[0];
+	for (i=blockused;(i<blocknr) || (m>0);i++){
+		if (root->map[i]==0) m--;
+	}
+	return m;
 }
 
 int balloc()//块分配
 {
 	int i;
+	struct headnode *root=(struct headnode*)mem[0]; 
 	for (i=blockused;i<blocknr;i++)	{
-		if (mem[i]==NULL) {
+		if (root->map[i]==0) {
 			mem[i] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);//映射一块空间
+			root->map[i]=1;
 			break;
 		}
 	}
@@ -45,8 +51,9 @@ int balloc()//块分配
 
 void bfree(int k)//块释放
 {
+	struct headnode *root=(struct headnode*)mem[0];	
 	munmap(mem[k], blocksize);//解除映射
-	mem[k]=NULL;
+	root->map[k]=0;
 	if (k<blockused) blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
 }
 
@@ -58,8 +65,7 @@ int ralloc(struct filenode *node,int n2)//块重新分配
 		for (i=n2;i<n1;i++) bfree(node->content[i]);
 	}
 	else {//如果要求的空间比已有的大,分配新增的块
-		k=getfbnum();//获取空闲块的数量
-		if (k<n2-n1) {
+		if (enoughblock(n2-n1)>0) {
 			return -1;
 		}//错误处理
 		for (i=n1;i<n2;i++) {
@@ -73,7 +79,7 @@ int ralloc(struct filenode *node,int n2)//块重新分配
 
 static struct filenode *get_filenode(const char *name)//按照文件名获取文件节点
 {
-	struct filenode *node = root;
+	struct filenode *node = ((struct headnode*)mem[0])->next;
 	while(node) {
 		if(strcmp(node->filename, name + 1) != 0)//用来跳过开头的/符号
 			node = node->next;
@@ -85,6 +91,7 @@ static struct filenode *get_filenode(const char *name)//按照文件名获取文
 
 static void create_filenode(const char *filename, const struct stat *st)//创建文件节点
 {	
+	struct headnode *root=(struct headnode*)mem[0];	
 	int k=balloc();//分配块存放文件属性
 	if (k<0) {
 		return;
@@ -94,12 +101,21 @@ static void create_filenode(const char *filename, const struct stat *st)//创建
 	memcpy(&(new->st), st, sizeof(struct stat));//复制文件属性
 	new->amount = 0;
 	new->num = k;
-	new->next = root;	
-	root = new;//采用头插法，新节点插在根节点之前
+	new->next = root->next;	
+	root->next = new;//采用头插法
+	return;
 }
 
-static void *oshfs_init(struct fuse_conn_info *conn)//内存初始化，函数提供了两种方法将所有的内存初始化为0
+static void *oshfs_init(struct fuse_conn_info *conn)//内存初始化
 {	
+	struct headnode *root;	
+	int i;
+	mem[0] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);//映射一块空间	
+	root = (struct headnode*)mem[0]; 
+	root->next=NULL;
+	for (i=1;i<blocknr;i++) root->map[i]=0;
+	root->map[0]=1;//分配空间，作为头节点
+	blockused=1;
 	return NULL;
 }
 static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属性
@@ -119,7 +135,7 @@ static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属�
 
 static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)//读目录
 {
-	struct filenode *node = root;
+	struct filenode *node = ((struct headnode*)mem[0])->next;
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
 	while(node) {
@@ -130,7 +146,7 @@ static int oshfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, of
 }
 
 static int oshfs_mknod(const char *path, mode_t mode, dev_t dev)//创建文件
-{
+{	
 	struct stat st;
 	st.st_mode = S_IFREG | 0644;
 	st.st_uid = fuse_get_context()->uid;
@@ -172,7 +188,7 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 }
 
 static int oshfs_truncate(const char *path, off_t size)//缩短文件大小（删除末尾的部分内容）
-{
+{	
 	struct filenode *node = get_filenode(path);
 	node->st.st_size = size;
 	int n=(size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
@@ -205,11 +221,13 @@ static int oshfs_read(const char *path, char *buf, size_t size, off_t offset, st
 static int oshfs_unlink(const char *path)//删除文件
 {
 	struct filenode *node=get_filenode(path);//找到文件
-	struct filenode *t=root;
+	struct headnode *root=(struct headnode*)mem[0];
+	struct filenode *t;
 	int i;
 	if (node==NULL) return -1;//异常处理，未找到文件
-	if (root==node) root=node->next;//如果是根节点，将root指针指向下一个节点
+	if (root->next==node) root->next=node->next;
 	else {
+		t=root->next;
 		while (t->next!=node) t=t->next;//找到前一个节点
 		t->next=node->next;
 	}
