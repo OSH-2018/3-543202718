@@ -8,36 +8,26 @@
 struct filenode {
 	int32_t amount;//文件占用的块数,4字节
 	int32_t num;//文件节点对应的内存块编号,4字节
-	char filename[32];//文件名，要求不多于32字节（包括\0）
+	char filename[96];//文件名，要求不多于96字节（包括\0）
 	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
 	struct filenode *next;//指向下一个节点的指针，8字节
-	int32_t content[8144];//指向内容的指针,支持最大的内容为254.5MB
+	int32_t content[8128];//指向内容的指针,支持最大的内容为254MB
 };//文件节点以链表形式存在，总空间占用为32KB
 struct headnode{
 	struct filenode *next;
+	int blockused;//确信blockused之前的所有块都被使用
 	char map[8*1024];//映射表，记录块是否被使用
 };//头节点
 static const size_t size =256 * 1024 * (size_t)1024;//size = 256MB
 static const size_t blocksize = 32 * (size_t)1024;//blocksize = 32KB
 static const int blocknr =8 * 1024;//blocknr = 8k
 static void *mem[8*1024];//内存块
-int blockused=0;//确信blockused之前的所有块都被使用
-
-int enoughblock(int m)//判断当前是否有足够的空闲块
-{
-	int i;
-	struct headnode *root=(struct headnode*)mem[0];
-	for (i=blockused;(i<blocknr) || (m>0);i++){
-		if (root->map[i]==0) m--;
-	}
-	return m;
-}
 
 int balloc()//块分配
 {
 	int i;
 	struct headnode *root=(struct headnode*)mem[0]; 
-	for (i=blockused;i<blocknr;i++)	{
+	for (i=root->blockused;i<blocknr;i++)	{
 		if (root->map[i]==0) {
 			mem[i] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);//映射一块空间
 			root->map[i]=1;
@@ -45,7 +35,7 @@ int balloc()//块分配
 		}
 	}
 	if (i>=blocknr) i=-1;//所有的块都是满的，没有空闲的块
-	if (i+1>blockused) blockused=i+1;//当前分配了第i块，说明从0到i的块都不是空闲的
+	if (i+1>root->blockused) root->blockused=i+1;//当前分配了第i块，说明从0到i的块都不是空闲的
 	return i;
 }
 
@@ -54,7 +44,7 @@ void bfree(int k)//块释放
 	struct headnode *root=(struct headnode*)mem[0];	
 	munmap(mem[k], blocksize);//解除映射
 	root->map[k]=0;
-	if (k<blockused) blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
+	if (k<root->blockused) root->blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
 }
 
 int ralloc(struct filenode *node,int n2)//块重新分配
@@ -65,11 +55,14 @@ int ralloc(struct filenode *node,int n2)//块重新分配
 		for (i=n2;i<n1;i++) bfree(node->content[i]);
 	}
 	else {//如果要求的空间比已有的大,分配新增的块
-		if (enoughblock(n2-n1)>0) {
-			return -1;
-		}//错误处理
+		if (n2>=8128) {
+			return -EFBIG;
+		}//错误处理,文件过大
 		for (i=n1;i<n2;i++) {
 			k=balloc();
+			if (k<0) {
+				return -ENOSPC;
+			}//错误处理，空间不足
 			node->content[i]=k;
 		}//分配新增的块
 	}	
@@ -115,7 +108,7 @@ static void *oshfs_init(struct fuse_conn_info *conn)//内存初始化
 	root->next=NULL;
 	for (i=1;i<blocknr;i++) root->map[i]=0;
 	root->map[0]=1;//分配空间，作为头节点
-	blockused=1;
+	root->blockused=1;
 	return NULL;
 }
 static int oshfs_getattr(const char *path, struct stat *stbuf)//返回文件属性
@@ -166,11 +159,11 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 {
 	struct filenode *node = get_filenode(path);
 	int i,j,k,m,n,temp,sum;
-	node->st.st_size = offset + size;//修改文件大小
-	n=(offset+size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
+	if(offset + size > node->st.st_size)	node->st.st_size = offset + size;//修改文件大小
+	n=(node->st.st_size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	k=ralloc(node,n);//重定向文件内容指针
 	if (k<0) {
-		return -1;
+		return k;
 	}//错误处理 
 	m=offset/blocksize;//偏移位置所在的块
 	offset=offset%blocksize;//块内偏移量

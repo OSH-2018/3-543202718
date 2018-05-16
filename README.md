@@ -3,8 +3,8 @@ PB16110428 王浩宇
 ## 综述
 我实现的文件系统主要是在示例程序的基础上修改而成，补全了删除功能，并对修改和读取功能做了一定改动，对于其他函数也在细节上有一定改动。源文件是oshfs.c。
 * 文件系统大小为256MB
-* 文件名不多于32字节
-* 支持文件最大内容为254.5MB
+* 文件名不多于96字节
+* 支持文件最大内容为254MB
 * 最多支持8192个文件
 * 支持创建、删除、修改文件的操作
 
@@ -20,10 +20,10 @@ PB16110428 王浩宇
 struct filenode {
 	int32_t amount;//文件占用的块数,4字节
 	int32_t num;//文件节点对应的内存块编号,4字节
-	char filename[32];//文件名，要求不多于32字节（包括\0）
+	char filename[96];//文件名，要求不多于96字节（包括\0）
 	struct stat st;//文件属性（定义在sys/stat.h中）,占用144字节
 	struct filenode *next;//指向下一个节点的指针，8字节
-	int32_t content[8144];//指向内容的指针,支持最大的内容为254.5MB
+	int32_t content[8128];//指向内容的指针,支持最大的内容为254MB
 };//文件节点以链表形式存在，总空间占用为32KB
 struct headnode{
 	struct filenode *next;
@@ -39,13 +39,13 @@ static const size_t blocksize = 32 * (size_t)1024;//blocksize = 32KB
 static const int blocknr =8 * 1024;//blocknr = 8k
 static void *mem[8*1024];//内存块
 ```
-对于内存的分配而言，块是基本的单位。对块的分配采用了一个极其朴素的算法，遍历所有的块，找到第一个空闲的块，做内存映射，并返回块的地址（实际是mem的下标）。如果要分配多个块，就要多次执行这个函数。在这里，我使用了一个优化，用全局变量blockused记录了一个整数值，确保在这个数之前的所有块都已经被分配。事实上，由于空闲块大多是连续的，多次执行该函数分配的块很可能是连续的，使用该优化可以大大减少分配时间。
+对于内存的分配而言，块是基本的单位。对块的分配采用了一个极其朴素的算法，遍历所有的块，找到第一个空闲的块，做内存映射，并返回块的地址（实际是mem的下标）。如果要分配多个块，就要多次执行这个函数。在这里，我使用了一个优化，用存储在第0块中的变量blockused记录了一个整数值，确保在这个数之前的所有块都已经被分配。事实上，由于空闲块大多是连续的，多次执行该函数分配的块很可能是连续的，使用该优化可以大大减少分配时间。
 ```C
 int balloc()//块分配
 {
 	int i;
 	struct headnode *root=(struct headnode*)mem[0]; 
-	for (i=blockused;i<blocknr;i++)	{
+	for (i=root->blockused;i<blocknr;i++)	{
 		if (root->map[i]==0) {
 			mem[i] = mmap(NULL, blocksize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);//映射一块空间
 			root->map[i]=1;
@@ -53,7 +53,7 @@ int balloc()//块分配
 		}
 	}
 	if (i>=blocknr) i=-1;//所有的块都是满的，没有空闲的块
-	if (i+1>blockused) blockused=i+1;//当前分配了第i块，说明从0到i的块都不是空闲的
+	if (i+1>root->blockused) root->blockused=i+1;//当前分配了第i块，说明从0到i的块都不是空闲的
 	return i;
 }
 ```
@@ -64,7 +64,7 @@ void bfree(int k)//块释放
 	struct headnode *root=(struct headnode*)mem[0];	
 	munmap(mem[k], blocksize);//解除映射
 	root->map[k]=0;
-	if (k<blockused) blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
+	if (k<root->blockused) root->blockused=k;//释放之前从0到blockused的块都不是空闲的，释放之后第k块是第一个空闲的块
 }
 ```
 ## 文件读写
@@ -74,11 +74,11 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 {
 	struct filenode *node = get_filenode(path);
 	int i,j,k,m,n,temp,sum;
-	node->st.st_size = offset + size;//修改文件大小
-	n=(offset+size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
+	if(offset + size > node->st.st_size)	node->st.st_size = offset + size;//修改文件大小
+	n=(node->st.st_size-1)/blocksize+1;//计算新的大小所需要的块数（取上整）
 	k=ralloc(node,n);//重定向文件内容指针
 	if (k<0) {
-		return -1;
+		return k;
 	}//错误处理 
 	m=offset/blocksize;//偏移位置所在的块
 	offset=offset%blocksize;//块内偏移量
@@ -110,7 +110,8 @@ static int oshfs_write(const char *path, const char *buf, size_t size, off_t off
 2. 修改blocksize和blocknr，保证前者是后者的4倍（在使用虚拟指针的情况下，一个块对应的content数组长度等于blocknr，即一个文件大小可以等于size，但由于还有其它元数据，实际会略小于size），且两者的积是size，即：
 	> blocksize = sqrt( size * 4 )  
 	> blocknr = sqrt( size / 4 )
-3. 修改filenode定义中的content数组长度，确保结构体大小等于blocksize。
+3. 修改filenode定义中的content数组长度，确保结构体大小等于blocksize;
+4. 修改ralloc函数中的错误处理部分，将关于文件过大的错误处理判断条件加以修改。
 ### 目录扩展
 我当前的文件系统没有实现目录，但我可以通过下面的方式实现目录：
 + 对于文件属性块，第一个字节作为标志，表明这个块是文件或目录：
