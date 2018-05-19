@@ -82,12 +82,12 @@ static struct filenode *get_filenode(const char *name)//按照文件名获取文
 	return NULL;
 }
 
-static void create_filenode(const char *filename, const struct stat *st)//创建文件节点
+static int create_filenode(const char *filename, const struct stat *st)//创建文件节点
 {	
 	struct headnode *root=(struct headnode*)mem[0];	
 	int k=balloc();//分配块存放文件属性
 	if (k<0) {
-		return;
+		return -ENOSPC;
 	}//错误处理
 	struct filenode *new = (struct filenode *)mem[k];	
 	strcpy(new->filename, filename);//复制文件名
@@ -96,7 +96,7 @@ static void create_filenode(const char *filename, const struct stat *st)//创建
 	new->num = k;
 	new->next = root->next;	
 	root->next = new;//采用头插法
-	return;
+	return 0;
 }
 
 static void *oshfs_init(struct fuse_conn_info *conn)//内存初始化
@@ -146,8 +146,7 @@ static int oshfs_mknod(const char *path, mode_t mode, dev_t dev)//创建文件
 	st.st_gid = fuse_get_context()->gid;
 	st.st_nlink = 1;
 	st.st_size = 0;
-	create_filenode(path + 1, &st);
-	return 0;
+	return create_filenode(path + 1, &st);
 }
 
 static int oshfs_open(const char *path, struct fuse_file_info *fi)
